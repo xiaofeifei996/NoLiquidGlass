@@ -1,59 +1,101 @@
 name: Build NoLiquidGlass
 
 on:
+  workflow_dispatch:
   push:
     branches: [ main ]
-  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: 1
 
 jobs:
   build:
-    runs-on: macos-14
+    name: Build (${{ matrix.scheme }})
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:
         include:
           - scheme: rootless
-            archs: arm64
+            arch: arm64
             pkgarch: iphoneos-arm64
+            theosrepo: theos/theos
           - scheme: roothide
-            archs: arm64e
+            arch: arm64e
             pkgarch: iphoneos-arm64e
+            theosrepo: roothide/theos
+    env:
+      THEOS: ${{ github.workspace }}/theos
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.0'
 
-      - name: Install Theos
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout Theos
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.theosrepo }}
+          path: theos
+          submodules: recursive
+
+      - name: Install iOS SDK
         run: |
           set -euo pipefail
-          if [ "${{ matrix.scheme }}" = "roothide" ]; then
-            git clone --recursive --depth 1 https://github.com/roothide/theos.git "$HOME/theos"
-          else
-            git clone --recursive --depth 1 https://github.com/theos/theos.git "$HOME/theos"
-          fi
-          curl -fsSL https://github.com/theos/sdks/archive/refs/heads/master.tar.gz \
-            | tar xz -C /tmp
-          mkdir -p "$HOME/theos/sdks"
-          mv /tmp/sdks-master/iPhoneOS16.5.sdk "$HOME/theos/sdks/" 2>/dev/null || \
-            mv /tmp/sdks-master/iPhoneOS*.sdk "$HOME/theos/sdks/" | head -1
-          ls "$HOME/theos/sdks"
-          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
-          brew install ldid 2>/dev/null || true
+          mkdir -p "$THEOS/sdks"
+          if [ -d "$THEOS/sdks/iPhoneOS16.5.sdk" ]; then exit 0; fi
+          STAGE="$(mktemp -d)"
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git "$STAGE/s"
+          git -C "$STAGE/s" sparse-checkout set iPhoneOS16.5.sdk
+          cp -R "$STAGE/s/iPhoneOS16.5.sdk" "$THEOS/sdks/"
+          ls -1 "$THEOS/sdks"
 
-      - name: Build (${{ matrix.scheme }})
+      - name: Install dependencies
         run: |
-          set -euo pipefail
-          sed -i '' "s/^ARCHS = .*/ARCHS = ${{ matrix.archs }}/" Makefile
+          brew install ldid dpkg xz
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+
+      - name: Build
+        run: |
+          set -o pipefail
+          sed -i '' "s/^ARCHS = .*/ARCHS = ${{ matrix.arch }}/" Makefile
           sed -i '' "s/^Architecture: .*/Architecture: ${{ matrix.pkgarch }}/" layout/DEBIAN/control
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+          echo "$THEOS/bin" >> "$GITHUB_PATH"
+          echo "THEOS_IGNORE_PARALLEL_BUILDING_NOTICE=yes" >> "$HOME/.theosrc"
           make clean 2>/dev/null || true
-          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=${{ matrix.scheme }} \
-            PACKAGE_BUILDNAME=""
-          find packages -name '*.deb' -print
+          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=${{ matrix.scheme }} 2>&1 | tee /tmp/build-${{ matrix.scheme }}.log
+          find ./packages -name "*.deb" -type f
+
+      - name: Collect
+        if: always()
+        run: |
+          mkdir -p out
+          cp packages/*.deb out/ 2>/dev/null || true
+          cp /tmp/build-${{ matrix.scheme }}.log out/ 2>/dev/null || true
+          ls -l out
 
       - name: Upload
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: deb-${{ matrix.scheme }}
-          path: packages/*.deb
-          if-no-files-found: error
+          name: pkg-${{ matrix.scheme }}
+          path: out/*
+          if-no-files-found: warn
+
+      - name: Report failure
+        if: failure()
+        run: |
+          echo "===== BUILD LOG ====="
+          tail -c 40000 /tmp/build-${{ matrix.scheme }}.log 2>/dev/null || echo "(no log)"
 
   release:
     needs: build
@@ -61,15 +103,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: debs
+          pattern: pkg-*
           merge-multiple: true
-      - name: Publish release
+      - name: Publish
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: NoLiquidGlass build ${{ github.run_number }}
+          name: NoLiquidGlass ${{ github.run_number }}
           files: debs/*.deb
-          generate_release_notes: false
