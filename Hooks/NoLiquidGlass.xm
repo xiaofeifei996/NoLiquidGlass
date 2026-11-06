@@ -60,8 +60,7 @@ static UIVisualEffect *NLGMap(UIVisualEffect *effect) {
 
 %end
 
-%constructor
-static void NLGInit(void) {
+%ctor {
     gGlassEffectClass = NSClassFromString(@"UIGlassEffect");
     gGlassContainerClass = NSClassFromString(@"UIGlassContainerEffect");
     %init(NLGCore);
