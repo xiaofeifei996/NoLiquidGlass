@@ -82,9 +82,10 @@ static void NLGDumpGlassClasses(void) {
 %ctor {
     NLGLog(@"=== NoLiquidGlass diag pid=%d ===", getpid());
     NLGLog(@"UIGlassEffect=%@ UIGlassContainerEffect=%@",
-           NSClassFromString(@"UIGlassEffect") ?: @"nil",
-           NSClassFromString(@"UIGlassContainerEffect") ?: @"nil");
-    NLGLog(@"CABackdropLayer=%@", NSClassFromString(@"CABackdropLayer") ?: @"nil");
+           NSStringFromClass(NSClassFromString(@"UIGlassEffect")) ?: @"nil",
+           NSStringFromClass(NSClassFromString(@"UIGlassContainerEffect")) ?: @"nil");
+    NLGLog(@"CABackdropLayer=%@",
+           NSStringFromClass(NSClassFromString(@"CABackdropLayer")) ?: @"nil");
     NLGDumpGlassClasses();
     %init(NLGDiag);
     NLGLog(@"hooks installed");
