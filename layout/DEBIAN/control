@@ -1,0 +1,9 @@
+Package: com.axs.noliquidglass
+Name: NoLiquidGlass
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: 关闭 iOS 26 液态玻璃效果，回到 iOS 18 风格的实心材质界面
+Maintainer: axs
+Author: axs
+Section: Tweaks
+Depends: mobilesubstrate

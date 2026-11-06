@@ -1,0 +1,75 @@
+name: Build NoLiquidGlass
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - scheme: rootless
+            archs: arm64
+            pkgarch: iphoneos-arm64
+          - scheme: roothide
+            archs: arm64e
+            pkgarch: iphoneos-arm64e
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Theos
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.scheme }}" = "roothide" ]; then
+            git clone --recursive --depth 1 https://github.com/roothide/theos.git "$HOME/theos"
+          else
+            git clone --recursive --depth 1 https://github.com/theos/theos.git "$HOME/theos"
+          fi
+          curl -fsSL https://github.com/theos/sdks/archive/refs/heads/master.tar.gz \
+            | tar xz -C /tmp
+          mkdir -p "$HOME/theos/sdks"
+          mv /tmp/sdks-master/iPhoneOS16.5.sdk "$HOME/theos/sdks/" 2>/dev/null || \
+            mv /tmp/sdks-master/iPhoneOS*.sdk "$HOME/theos/sdks/" | head -1
+          ls "$HOME/theos/sdks"
+          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
+          brew install ldid 2>/dev/null || true
+
+      - name: Build (${{ matrix.scheme }})
+        run: |
+          set -euo pipefail
+          sed -i '' "s/^ARCHS = .*/ARCHS = ${{ matrix.archs }}/" Makefile
+          sed -i '' "s/^Architecture: .*/Architecture: ${{ matrix.pkgarch }}/" layout/DEBIAN/control
+          make clean 2>/dev/null || true
+          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=${{ matrix.scheme }} \
+            PACKAGE_BUILDNAME=""
+          find packages -name '*.deb' -print
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.scheme }}
+          path: packages/*.deb
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: debs
+          merge-multiple: true
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: NoLiquidGlass build ${{ github.run_number }}
+          files: debs/*.deb
+          generate_release_notes: false
