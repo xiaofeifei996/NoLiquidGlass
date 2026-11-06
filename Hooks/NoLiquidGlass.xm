@@ -58,7 +58,7 @@ static UIVisualEffect *NLGMap(UIVisualEffect *effect) {
 
 %end
 
-%end  // NLGCore
+%end
 
 %constructor
 static void NLGInit(void) {
