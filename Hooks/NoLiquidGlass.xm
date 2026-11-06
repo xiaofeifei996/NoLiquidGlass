@@ -1,67 +1,91 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <QuartzCore/QuartzCore.h>
 
-// iOS 26 的液态玻璃（Solarium）通过 UIGlassEffect / UIGlassContainerEffect 施加到
-// UIVisualEffectView 上。系统的「关闭玻璃」偏好开关走的是另一条回退渲染路径，
-// 它会把材质层整个丢掉、露出不透明白底 —— 控制中心、文件夹、搜索框于是变成白块。
-//
-// 这里换思路：系统仍认为玻璃是开着的（不会掉进白色回退路径），
-// 只在运行时把玻璃效果替换成普通 UIBlurEffect，得到 iOS 16 那种毛玻璃观感。
+// 诊断版：记录玻璃实际经过的对象，用来定位真正的 Hook 点。
 
-static Class gGlassEffectClass = Nil;
-static Class gGlassContainerClass = Nil;
-
-static BOOL NLGIsGlass(id effect) {
-    if (!effect) return NO;
-    if (gGlassEffectClass && [effect isKindOfClass:gGlassEffectClass]) return YES;
-    if (gGlassContainerClass && [effect isKindOfClass:gGlassContainerClass]) return YES;
-    NSString *name = NSStringFromClass([effect class]);
-    return [name containsString:@"GlassEffect"] || [name containsString:@"GlassContainer"];
+static NSString *NLGLogPath(void) {
+    return [NSString stringWithFormat:@"/var/mobile/Documents/nlg-%d.log", getpid()];
 }
 
-static BOOL NLGDark(void) {
-    return ([UIScreen mainScreen].traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
+static void NLGLog(NSString *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:ap];
+    va_end(ap);
+    NSString *line = [NSString stringWithFormat:@"[%@] %@\n",
+                      [NSDate date], msg];
+    FILE *fp = fopen(NLGLogPath().UTF8String, "a");
+    if (fp) {
+        fputs(line.UTF8String, fp);
+        fclose(fp);
+    }
 }
 
-static UIBlurEffect *NLGBlur(void) {
-    UIBlurEffectStyle style = NLGDark() ? UIBlurEffectStyleSystemMaterialDark
-                                        : UIBlurEffectStyleSystemMaterialLight;
-    return [UIBlurEffect effectWithStyle:style];
+static void NLGLogOnce(NSString *key, NSString *fmt, ...) {
+    static NSMutableSet *seen = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ seen = [NSMutableSet set]; });
+    @synchronized (seen) {
+        if ([seen containsObject:key]) return;
+        [seen addObject:key];
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:ap];
+    va_end(ap);
+    NLGLog(@"%@", msg);
 }
 
-static UIVisualEffect *NLGMap(UIVisualEffect *effect) {
-    if (!NLGIsGlass(effect)) return effect;
-    UIBlurEffect *blur = NLGBlur();
-    return blur ?: effect;
-}
-
-%group NLGCore
+%group NLGDiag
 
 %hook UIVisualEffectView
 
 - (instancetype)initWithEffect:(UIVisualEffect *)effect {
-    return %orig(NLGMap(effect));
+    if (effect) {
+        NLGLogOnce([@"eff:" stringByAppendingString:NSStringFromClass([effect class])],
+                   @"UIVisualEffectView effect=%s", object_getClassName(effect));
+    }
+    return %orig;
 }
 
 - (void)setEffect:(UIVisualEffect *)effect {
-    %orig(NLGMap(effect));
-}
-
-%end
-
-// 部分代码路径直接用类方法造玻璃，兜一层。
-%hook UIGlassEffect
-
-+ (instancetype)effectWithStyle:(NSInteger)style {
-    return (id)NLGBlur();
+    if (effect) {
+        NLGLogOnce([@"eff:" stringByAppendingString:NSStringFromClass([effect class])],
+                   @"setEffect effect=%s", object_getClassName(effect));
+    }
+    %orig;
 }
 
 %end
 
 %end
+
+static void NLGDumpGlassClasses(void) {
+    unsigned int total = 0;
+    Class *classes = objc_copyClassList(&total);
+    NSMutableArray *hits = [NSMutableArray array];
+    for (unsigned int i = 0; i < total; i++) {
+        const char *n = class_getName(classes[i]);
+        if (!n) continue;
+        NSString *s = @(n);
+        if ([s containsString:@"Glass"] || [s containsString:@"Solarium"] ||
+            [s containsString:@"CoreMaterial"] || [s containsString:@"Backdrop"]) {
+            [hits addObject:s];
+        }
+    }
+    free(classes);
+    NLGLog(@"matched classes (%lu): %@", (unsigned long)hits.count,
+           [[hits sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@", "]);
+}
 
 %ctor {
-    gGlassEffectClass = NSClassFromString(@"UIGlassEffect");
-    gGlassContainerClass = NSClassFromString(@"UIGlassContainerEffect");
-    %init(NLGCore);
+    NLGLog(@"=== NoLiquidGlass diag pid=%d ===", getpid());
+    NLGLog(@"UIGlassEffect=%@ UIGlassContainerEffect=%@",
+           NSClassFromString(@"UIGlassEffect") ?: @"nil",
+           NSClassFromString(@"UIGlassContainerEffect") ?: @"nil");
+    NLGLog(@"CABackdropLayer=%@", NSClassFromString(@"CABackdropLayer") ?: @"nil");
+    NLGDumpGlassClasses();
+    %init(NLGDiag);
+    NLGLog(@"hooks installed");
 }
