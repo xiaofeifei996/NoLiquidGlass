@@ -19,35 +19,23 @@ static BOOL NLGIsGlass(id effect) {
     return [name containsString:@"GlassEffect"] || [name containsString:@"GlassContainer"];
 }
 
-static BOOL NLGIsDark(UITraitCollection *trait) {
-    return (trait.userInterfaceStyle == UIUserInterfaceStyleDark);
+static BOOL NLGDark(void) {
+    return ([UIScreen mainScreen].traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
 }
 
-static UIBlurEffect *NLGBlurFor(id glassEffect) {
-    UITraitCollection *trait = nil;
-    @try {
-        id v = [glassEffect valueForKey:@"traitCollection"];
-        if ([v isKindOfClass:[UITraitCollection class]]) trait = v;
-    } @catch (__unused NSException *e) {
-    }
-    if (!trait) {
-        @try {
-            trait = [UIScreen mainScreen].traitCollection;
-        } @catch (__unused NSException *e) {
-        }
-    }
-    UIBlurEffectStyle style = NLGIsDark(trait)
-        ? UIBlurEffectStyleSystemMaterialDark
-        : UIBlurEffectStyleSystemMaterialLight;
+static UIBlurEffect *NLGBlur(void) {
+    UIBlurEffectStyle style = NLGDark() ? UIBlurEffectStyleSystemMaterialDark
+                                        : UIBlurEffectStyleSystemMaterialLight;
     return [UIBlurEffect effectWithStyle:style];
 }
 
-// 把任意 VisualEffect 归一化成毛玻璃；玻璃就换掉，别的一律原样返回。
 static UIVisualEffect *NLGMap(UIVisualEffect *effect) {
     if (!NLGIsGlass(effect)) return effect;
-    UIBlurEffect *blur = NLGBlurFor(effect);
+    UIBlurEffect *blur = NLGBlur();
     return blur ?: effect;
 }
+
+%group NLGCore
 
 %hook UIVisualEffectView
 
@@ -61,23 +49,20 @@ static UIVisualEffect *NLGMap(UIVisualEffect *effect) {
 
 %end
 
-%group GlassClassGroup
+// 部分代码路径直接用类方法造玻璃，兜一层。
 %hook UIGlassEffect
+
 + (instancetype)effectWithStyle:(NSInteger)style {
-    return (id)[UIBlurEffect effectWithStyle:NLGIsDark([UIScreen mainScreen].traitCollection)
-                                             ? UIBlurEffectStyleSystemMaterialDark
-                                             : UIBlurEffectStyleSystemMaterialLight];
+    return (id)NLGBlur();
 }
+
 %end
-%end
+
+%end  // NLGCore
 
 %constructor
 static void NLGInit(void) {
     gGlassEffectClass = NSClassFromString(@"UIGlassEffect");
     gGlassContainerClass = NSClassFromString(@"UIGlassContainerEffect");
-    // 类可能延迟注册：只在存在时装类方法 hook，避免 hook 失败导致整个 dylib 初始化异常。
-    if (gGlassEffectClass &&
-        [gGlassEffectClass respondsToSelector:NSSelectorFromString(@"effectWithStyle:")]) {
-        %init(GlassClassGroup);
-    }
+    %init(NLGCore);
 }
